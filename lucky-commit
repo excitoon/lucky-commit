@@ -18,21 +18,24 @@ def split(message):
 
     lines = message.split(b"\n")
     if len(lines) > 4 and lines[4].startswith(b"gpgsig "):
-        return b"\n".join(lines[:4] + [lines[4][:7]]), b"\n".join([lines[4][7:]] + lines[5:])
+        return b"\n".join(lines[:4] + [lines[4][:7]]), b"\n".join([lines[4][7:].lstrip(b" \t")] + lines[5:])
 
     else:
-        return message[:-1], message[-1:]  # Last symbol must be newline.
+        return message[:-1].rstrip(b" \t"), message[-1:]  # Last symbol must be newline.
 
 
-def get_match(message, prefix):
+def get_match(message, prefix, git_path):
     assert message.endswith(b"\n"), "Error: expected the current commit message to end in a newline."
     message_prefix, message_suffix = split(message)
+    objects_path = os.path.join(git_path, "objects")
     for extension_size in itertools.count():
-        data_prefix = f"commit {len(message)+extension_size}".encode() + b"\x00" + message_prefix
+        data_prefix = (
+            f"commit {len(message_prefix)+len(message_suffix)+extension_size}".encode() + b"\x00" + message_prefix
+        )
         for extension in itertools.product(b" \t", repeat=extension_size):
             data = data_prefix + bytes(extension) + message_suffix
             sha = hashlib.sha1(data).hexdigest()
-            if sha.startswith(prefix):
+            if sha.startswith(prefix) and not os.path.isfile(os.path.join(objects_path, sha[:2], sha[2:])):
                 return sha, data
 
 
@@ -41,7 +44,6 @@ def write_git_object(sha, data, git_path):
     os.makedirs(dir_path, exist_ok=True)
 
     path = os.path.join(dir_path, sha[2:])
-    assert not os.path.isfile(path), f"Object {sha} already exists."
     with open(path, "wb") as f:
         f.write(data)
 
@@ -51,9 +53,10 @@ assert len(prefix) <= 40 and set(prefix) <= set("01234567890abcdef"), "Usage: LU
 if prefix:
     commit = subprocess.run(["git", "cat-file", "commit", "HEAD"], stdout=subprocess.PIPE)
     assert commit.returncode == 0
-    sha, result = get_match(commit.stdout, prefix)
     git_dir = subprocess.run(["git", "rev-parse", "--git-dir"], universal_newlines=True, stdout=subprocess.PIPE)
     assert git_dir.returncode == 0
-    write_git_object(sha, zlib.compress(result), git_dir.stdout.strip())
+    git_path = git_dir.stdout.strip()
+    sha, result = get_match(commit.stdout, prefix, git_path)
+    write_git_object(sha, zlib.compress(result), git_path)
     p = subprocess.run(["git", "reset", sha])
     assert p.returncode == 0
