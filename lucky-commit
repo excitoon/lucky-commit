@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 
+import concurrent.futures
 import hashlib
 import itertools
 import os
 import subprocess
 import zlib
 
+import requests
+
 
 prefix = os.environ.get("LUCKY_COMMIT_PREFIX", "")
+api_url = os.environ.get("LUCKY_COMMIT_API_URL", "")
+api_concurrency = int(os.environ.get("LUCKY_COMMIT_API_CONCURRENCY", "100"))
 
 
 def split(message):
@@ -32,11 +37,42 @@ def get_match(message, prefix, git_path):
         data_prefix = (
             f"commit {len(message_prefix)+len(message_suffix)+extension_size}".encode() + b"\x00" + message_prefix
         )
-        for extension in itertools.product(b" \t", repeat=extension_size):
-            data = data_prefix + bytes(extension) + message_suffix
-            sha = hashlib.sha1(data).hexdigest()
-            if sha.startswith(prefix) and not os.path.isfile(os.path.join(objects_path, sha[:2], sha[2:])):
-                return sha, data
+        if api_url:
+            def play(start: int, end: int) -> list[int]:
+                r = requests.post(
+                    api_url,
+                    params={"prefix": prefix, "size": extension_size, "offset": len(data_prefix), "start": f"{start:x}", "end": f"{end:x}"},
+                    data=body,
+                )
+                assert r.status_code == 404 or r.ok
+                if r.ok:
+                    return [int(x, 16) for x in r.text.splitlines()]
+                else:
+                    return []
+
+            body = data_prefix + b"_"*extension_size + message_suffix
+            with concurrent.futures.ThreadPoolExecutor(max_workers=api_concurrency) as pool:
+                jobs = []
+                end = 2**extension_size
+                block = 16_000_000
+                for i in range(0, end, block):
+                    jobs.append(pool.submit(play, i, min(i+block, end)))
+                for job in concurrent.futures.as_completed(jobs):
+                    for result in job.result():
+                        extension = b"".join((bytes((b" \t"[result >> i & 1],)) for i in range(extension_size)))
+                        data = data_prefix + extension + message_suffix
+                        sha = hashlib.sha1(data).hexdigest()
+                        assert sha.startswith(prefix)
+                        if not os.path.isfile(os.path.join(objects_path, sha[:2], sha[2:])):
+                            pool.shutdown(cancel_futures=True)
+                            return sha, data
+
+        else:
+            for extension in itertools.product(b" \t", repeat=extension_size):
+                data = data_prefix + bytes(extension) + message_suffix
+                sha = hashlib.sha1(data).hexdigest()
+                if sha.startswith(prefix) and not os.path.isfile(os.path.join(objects_path, sha[:2], sha[2:])):
+                    return sha, data
 
 
 def write_git_object(sha, data, git_path):
