@@ -1,4 +1,5 @@
 import os
+
 import setuptools
 
 
@@ -7,7 +8,7 @@ with open(f"{os.path.dirname(os.path.abspath(__file__))}/requirements.txt") as r
         setuptools.setup(
             name="lucky-commit",
             version="0.0.3",
-            description="FIXME desc written in Python",  # FIXME
+            description="Lucky commit generator written in Python",
             long_description=readme.read(),
             long_description_content_type="text/markdown",
             author="Vladimir Chebotarev",
